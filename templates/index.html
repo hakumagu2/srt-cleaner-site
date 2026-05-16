@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Whisper字幕クリーナー｜SRTをPremiere Pro向けに整形</title>
-  <meta name="description" content="Whisperで作成した日本語SRT字幕を、句読点削除・漢数字変換・2行整形・重複削除などで見やすく整える無料ツールです。">
+  <title>Whisper字幕クリーナー｜SRT・タイムコード付きTXTを整形</title>
+  <meta name="description" content="Whisperで作成した日本語SRTやタイムコード付きTXTを、句読点削除・漢数字変換・2行整形・重複削除などで見やすく整える無料ツールです。">
 
   <style>
     :root {
@@ -16,7 +16,6 @@
       --main: #2563eb;
       --main-dark: #1d4ed8;
       --soft: #eff6ff;
-      --danger: #991b1b;
     }
 
     * {
@@ -150,7 +149,7 @@
 
     .row {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 12px;
     }
 
@@ -241,12 +240,6 @@
       font-size: 13px;
     }
 
-    .footer a {
-      color: var(--main-dark);
-      font-weight: 700;
-      text-decoration: none;
-    }
-
     @media (max-width: 720px) {
       .card {
         padding: 18px;
@@ -269,19 +262,25 @@
 <body>
   <main class="wrap">
     <div class="hero">
-      <div class="badge">無料・SRT専用</div>
+      <div class="badge">無料・SRT / タイムコード付きTXT対応</div>
       <h1>Whisper字幕クリーナー</h1>
       <p class="lead">
-        Whisperで作成した日本語SRTを、Premiere ProやYouTubeで使いやすい形に整えます。
+        Whisperで作成した日本語SRTやタイムコード付きTXTを、Premiere ProやYouTubeで使いやすい形に整えます。
         句読点削除、漢数字変換、2行整形、重複字幕削除に対応しています。
       </p>
     </div>
 
     <form class="card" action="/convert" method="post" enctype="multipart/form-data">
       <div class="section">
-        <div class="section-title">1. SRTファイルを選択</div>
+        <div class="section-title">1. ファイルを選択</div>
         <div class="file-box">
-          <input type="file" name="srt_file" accept=".srt" required>
+          <input type="file" name="srt_file" accept=".srt,.txt" required>
+        </div>
+        <div class="notes">
+          対応形式：<strong>.srt</strong> または <strong>タイムコード付き .txt</strong><br>
+          TXT例：<br>
+          <code>00:00:01:15 - 00:00:02:19</code><br>
+          <code>こんばんは</code>
         </div>
       </div>
 
@@ -356,6 +355,14 @@
             <label for="offset_ms">全体のズレ調整 ms</label>
             <input id="offset_ms" type="number" name="offset_ms" value="0" step="100">
           </div>
+
+          <div class="field">
+            <label for="txt_fps">TXTのFPS</label>
+            <select id="txt_fps" name="txt_fps">
+              <option value="60" selected>60fps</option>
+              <option value="30">30fps</option>
+            </select>
+          </div>
         </div>
       </div>
 
@@ -365,13 +372,19 @@
 
       <div class="notes">
         <strong>注意：</strong><br>
-        このツールはSRT本文の整形を目的としています。音声に合わせたタイムコードの自動修正は行いません。
-        タイムコードは、全体のズレ調整と重なり補正のみ対応しています。<br>
-        アップロードされたSRTファイルは変換処理のみに使用され、サーバー上に保存されません。
+        SRTの場合は、そのまま字幕本文を整形します。<br>
+        タイムコード付きTXTの場合は、30fps / 60fps の設定に応じてSRT形式に変換します。<br>
+        このツールは音声に合わせたタイムコードの自動修正は行いません。
+        全体のズレ調整と重なり補正のみ対応しています。<br>
+        アップロードされたファイルは変換処理のみに使用され、サーバー上に保存されません。
       </div>
     </form>
 
     <section class="features">
+      <div class="feature">
+        <b>SRT / TXT対応</b>
+        <span>SRTだけでなく、タイムコード付きTXTもSRT化できます。</span>
+      </div>
       <div class="feature">
         <b>日本語字幕向け</b>
         <span>漢数字を数字に変換し、Whisper字幕を見やすくします。</span>
@@ -380,15 +393,12 @@
         <b>Premiere向け</b>
         <span>2行・3行整形で、編集時に扱いやすいSRTにします。</span>
       </div>
-      <div class="feature">
-        <b>軽い処理</b>
-        <span>SRT専用なので、動画や音声アップロードは不要です。</span>
-      </div>
     </section>
 
-    <div class="footer">
-      不具合・改善要望フォームは後でここに追加できます。
-    </div>
-  </main>
-</body>
-</html>
+<div class="footer">
+  不具合報告・改善要望は
+  <a href="https://docs.google.com/forms/d/e/1FAIpQLSd1vJUw8lxIady0ZNJ0Hn-Ah-a4qVcDPNuUfmqI35DmYW7MHg/viewform" target="_blank" rel="noopener">
+    こちらのフォーム
+  </a>
+  から送信できます。
+</div>
