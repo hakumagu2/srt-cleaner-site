@@ -1,0 +1,394 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Whisper字幕クリーナー｜SRTをPremiere Pro向けに整形</title>
+  <meta name="description" content="Whisperで作成した日本語SRT字幕を、句読点削除・漢数字変換・2行整形・重複削除などで見やすく整える無料ツールです。">
+
+  <style>
+    :root {
+      --bg: #f8fafc;
+      --card: #ffffff;
+      --text: #111827;
+      --muted: #6b7280;
+      --line: #e5e7eb;
+      --main: #2563eb;
+      --main-dark: #1d4ed8;
+      --soft: #eff6ff;
+      --danger: #991b1b;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%);
+      color: var(--text);
+      line-height: 1.7;
+    }
+
+    .wrap {
+      max-width: 920px;
+      margin: 0 auto;
+      padding: 32px 16px 56px;
+    }
+
+    .hero {
+      text-align: center;
+      margin-bottom: 24px;
+    }
+
+    .badge {
+      display: inline-block;
+      background: var(--soft);
+      color: var(--main-dark);
+      border: 1px solid #bfdbfe;
+      padding: 6px 12px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 700;
+      margin-bottom: 12px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(28px, 6vw, 44px);
+      line-height: 1.2;
+      letter-spacing: -0.04em;
+    }
+
+    .lead {
+      margin: 14px auto 0;
+      max-width: 720px;
+      color: var(--muted);
+      font-size: 16px;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      box-shadow: 0 16px 40px rgba(15, 23, 42, 0.08);
+      padding: 24px;
+    }
+
+    .section {
+      margin-top: 22px;
+      padding-top: 22px;
+      border-top: 1px solid var(--line);
+    }
+
+    .section:first-child {
+      margin-top: 0;
+      padding-top: 0;
+      border-top: none;
+    }
+
+    .section-title {
+      font-size: 17px;
+      font-weight: 800;
+      margin-bottom: 10px;
+    }
+
+    .file-box {
+      border: 2px dashed #cbd5e1;
+      background: #f8fafc;
+      border-radius: 18px;
+      padding: 20px;
+    }
+
+    input[type="file"] {
+      width: 100%;
+      padding: 12px;
+      border-radius: 12px;
+      background: white;
+      border: 1px solid var(--line);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    label.option {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #fff;
+      cursor: pointer;
+    }
+
+    label.option:hover {
+      background: #f9fafb;
+    }
+
+    input[type="checkbox"] {
+      margin-top: 5px;
+      transform: scale(1.1);
+    }
+
+    .option-text {
+      font-weight: 700;
+      font-size: 14px;
+    }
+
+    .option-help {
+      display: block;
+      color: var(--muted);
+      font-weight: 400;
+      font-size: 12px;
+      margin-top: 2px;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .field label {
+      font-weight: 700;
+      font-size: 14px;
+    }
+
+    select,
+    input[type="number"] {
+      width: 100%;
+      padding: 12px 13px;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: white;
+      font-size: 15px;
+    }
+
+    .submit {
+      margin-top: 24px;
+    }
+
+    button {
+      width: 100%;
+      border: none;
+      border-radius: 16px;
+      background: var(--main);
+      color: white;
+      font-size: 18px;
+      font-weight: 900;
+      padding: 16px 20px;
+      cursor: pointer;
+      box-shadow: 0 10px 22px rgba(37, 99, 235, 0.28);
+    }
+
+    button:hover {
+      background: var(--main-dark);
+    }
+
+    .notes {
+      margin-top: 20px;
+      background: #f9fafb;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 16px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .notes strong {
+      color: var(--text);
+    }
+
+    .features {
+      margin-top: 24px;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .feature {
+      background: rgba(255,255,255,0.75);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 14px;
+    }
+
+    .feature b {
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    .feature span {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .footer {
+      margin-top: 28px;
+      text-align: center;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .footer a {
+      color: var(--main-dark);
+      font-weight: 700;
+      text-decoration: none;
+    }
+
+    @media (max-width: 720px) {
+      .card {
+        padding: 18px;
+        border-radius: 18px;
+      }
+
+      .grid,
+      .row,
+      .features {
+        grid-template-columns: 1fr;
+      }
+
+      .wrap {
+        padding-top: 22px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <main class="wrap">
+    <div class="hero">
+      <div class="badge">無料・SRT専用</div>
+      <h1>Whisper字幕クリーナー</h1>
+      <p class="lead">
+        Whisperで作成した日本語SRTを、Premiere ProやYouTubeで使いやすい形に整えます。
+        句読点削除、漢数字変換、2行整形、重複字幕削除に対応しています。
+      </p>
+    </div>
+
+    <form class="card" action="/convert" method="post" enctype="multipart/form-data">
+      <div class="section">
+        <div class="section-title">1. SRTファイルを選択</div>
+        <div class="file-box">
+          <input type="file" name="srt_file" accept=".srt" required>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">2. 変換オプション</div>
+
+        <div class="grid">
+          <label class="option">
+            <input type="checkbox" name="remove_punct" checked>
+            <span>
+              <span class="option-text">句読点を削除</span>
+              <span class="option-help">「、」「。」を削除します。「？」は残ります。</span>
+            </span>
+          </label>
+
+          <label class="option">
+            <input type="checkbox" name="add_question">
+            <span>
+              <span class="option-text">疑問文に「？」を付ける</span>
+              <span class="option-help">「ですか」「どう」など質問っぽい文だけに追加します。</span>
+            </span>
+          </label>
+
+          <label class="option">
+            <input type="checkbox" name="allow_3" checked>
+            <span>
+              <span class="option-text">3行字幕を許可</span>
+              <span class="option-help">長い字幕だけ3行まで使います。</span>
+            </span>
+          </label>
+
+          <label class="option">
+            <input type="checkbox" name="dedupe" checked>
+            <span>
+              <span class="option-text">連続重複字幕を削除</span>
+              <span class="option-help">短時間で同じ字幕が連続した場合に削除します。</span>
+            </span>
+          </label>
+
+          <label class="option">
+            <input type="checkbox" name="fix_overlap" checked>
+            <span>
+              <span class="option-text">タイムコードの重なりを補正</span>
+              <span class="option-help">前後の字幕が重なった時だけ軽く補正します。</span>
+            </span>
+          </label>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">3. 詳細設定</div>
+
+        <div class="row">
+          <div class="field">
+            <label for="preset">辞書プリセット</label>
+            <select id="preset" name="preset">
+              <option value="common" selected>共通</option>
+              <option value="video">動画編集向け</option>
+              <option value="business">ビジネス・副業向け</option>
+              <option value="job">就活・転職向け</option>
+              <option value="all">全部</option>
+              <option value="none">辞書なし</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label for="max_chars">1行の最大文字数</label>
+            <input id="max_chars" type="number" name="max_chars" value="22" min="12" max="40">
+          </div>
+
+          <div class="field">
+            <label for="offset_ms">全体のズレ調整 ms</label>
+            <input id="offset_ms" type="number" name="offset_ms" value="0" step="100">
+          </div>
+        </div>
+      </div>
+
+      <div class="submit">
+        <button type="submit">変換して final.srt をダウンロード</button>
+      </div>
+
+      <div class="notes">
+        <strong>注意：</strong><br>
+        このツールはSRT本文の整形を目的としています。音声に合わせたタイムコードの自動修正は行いません。
+        タイムコードは、全体のズレ調整と重なり補正のみ対応しています。<br>
+        アップロードされたSRTファイルは変換処理のみに使用され、サーバー上に保存されません。
+      </div>
+    </form>
+
+    <section class="features">
+      <div class="feature">
+        <b>日本語字幕向け</b>
+        <span>漢数字を数字に変換し、Whisper字幕を見やすくします。</span>
+      </div>
+      <div class="feature">
+        <b>Premiere向け</b>
+        <span>2行・3行整形で、編集時に扱いやすいSRTにします。</span>
+      </div>
+      <div class="feature">
+        <b>軽い処理</b>
+        <span>SRT専用なので、動画や音声アップロードは不要です。</span>
+      </div>
+    </section>
+
+    <div class="footer">
+      不具合・改善要望フォームは後でここに追加できます。
+    </div>
+  </main>
+</body>
+</html>
