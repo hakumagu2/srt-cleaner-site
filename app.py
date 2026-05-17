@@ -1279,6 +1279,210 @@ def parse_timed_txt_blocks(txt_text: str, fps: float = 60.0):
 # 音声処理はしない。アップロード済みのSRT/TXTだけ整形。
 # =========================================================
 
+
+# =========================================================
+# YouTube自動字幕SRTの前処理
+# =========================================================
+
+def is_probably_youtube_rolling(blocks) -> bool:
+    """
+    YouTube自動字幕のSRTは、
+    ・前後の字幕時間が重なりやすい
+    ・「22」→「卒です」「26」→「歳です」のように細かく割れやすい
+    ので、その傾向が強い時だけ前処理する。
+    """
+    if len(blocks) < 8:
+        return False
+
+    overlap_count = 0
+    tiny_count = 0
+    checked = 0
+    prev_end = None
+
+    for _idx, timecode, body in blocks[:120]:
+        try:
+            start, end = split_timecode(timecode)
+        except Exception:
+            continue
+
+        checked += 1
+        text = flatten_text(body)
+
+        if prev_end is not None and start < prev_end:
+            overlap_count += 1
+
+        if len(normalize_for_dedupe(text)) <= 4:
+            tiny_count += 1
+
+        prev_end = end
+
+    if checked == 0:
+        return False
+
+    # YouTubeっぽい条件：重なりが多い、または短すぎる断片が多い
+    return (overlap_count / checked >= 0.18) or (tiny_count / checked >= 0.18)
+
+
+def looks_like_fragment(text: str) -> bool:
+    """
+    単体では字幕として弱い断片。
+    例：22 / 26 / 23年の4 / IT / 系 / 卒です / 歳です
+    """
+    t = flatten_text(text)
+    n = normalize_for_dedupe(t)
+
+    if not n:
+        return True
+
+    if len(n) <= 2:
+        return True
+
+    if re.fullmatch(r"\d+", n):
+        return True
+
+    if re.fullmatch(r"\d+年の?\d*", n):
+        return True
+
+    if n in {"卒です", "歳です", "月", "系", "者目", "画面", "はい", "うん"}:
+        return True
+
+    if len(n) <= 5 and re.search(r"(です|ます|ました|でした|卒|歳|年|月|系)$", n):
+        return True
+
+    return False
+
+
+def should_merge_youtube_fragments(a: str, b: str, combined_limit=70) -> bool:
+    """
+    YouTube自動字幕の細切れを戻す。
+    ただし何でも結合すると長くなりすぎるので、断片っぽいもの中心。
+    """
+    a = flatten_text(a)
+    b = flatten_text(b)
+
+    if not a or not b:
+        return False
+
+    combined = flatten_text(a + " " + b)
+    if len(combined) > combined_limit:
+        return False
+
+    # 片方が明らかな断片なら結合
+    if looks_like_fragment(a) or looks_like_fragment(b):
+        return True
+
+    # 前が途中で終わっている
+    if re.search(r"(を|が|は|に|で|と|も|の|とか|けど|ので|から|して|していて|してて|なりまして|思い切って|まず|はいまず|え)$", a):
+        return True
+
+    # 後ろが続きっぽい
+    if re.match(r"^(月|歳|卒|系|者目|の|を|が|は|に|で|と|も|ちょっと|月から|月退職|歳です|卒です)", b):
+        return True
+
+    return False
+
+
+def preprocess_youtube_rolling_srt(blocks):
+    """
+    YouTube自動字幕のローリング表示・細切れを、通常のSRTに近づける前処理。
+    ここではまだ本文整形しない。ブロックの整理だけ行う。
+    """
+    if not blocks:
+        return blocks
+
+    if not is_probably_youtube_rolling(blocks):
+        return blocks
+
+    parsed = []
+    for idx, timecode, body in blocks:
+        try:
+            start, end = split_timecode(timecode)
+        except Exception:
+            continue
+
+        body = flatten_text(body)
+        if not body:
+            continue
+
+        parsed.append([idx, start, end, body])
+
+    if not parsed:
+        return blocks
+
+    # 1) ほぼ同じ時間帯の短い包含字幕を削る
+    # 例：短い「はい」や「画面」が長い字幕に重なっている場合
+    kept = []
+    for i, cur in enumerate(parsed):
+        _idx, s, e, text = cur
+        cur_norm = normalize_for_dedupe(text)
+        drop = False
+
+        for j in range(max(0, i - 3), min(len(parsed), i + 4)):
+            if i == j:
+                continue
+
+            _jidx, js, je, jtext = parsed[j]
+            j_norm = normalize_for_dedupe(jtext)
+
+            if not cur_norm or not j_norm:
+                continue
+
+            overlap = max(0.0, min(e, je) - max(s, js))
+            dur = max(0.01, e - s)
+
+            # 自分が相手の文字列に含まれ、時間も大きく重なるなら削る
+            if len(cur_norm) <= 12 and cur_norm != j_norm and cur_norm in j_norm and overlap / dur >= 0.50:
+                drop = True
+                break
+
+            # かなり短い断片が長い字幕と強く重なるなら削る
+            if looks_like_fragment(text) and len(j_norm) >= 8 and overlap / dur >= 0.75:
+                drop = True
+                break
+
+        if not drop:
+            kept.append(cur)
+
+    # 2) 近い時間で続いている細切れを結合
+    merged = []
+    i = 0
+    while i < len(kept):
+        cur = kept[i]
+        i += 1
+
+        while i < len(kept):
+            nxt = kept[i]
+            gap = nxt[1] - cur[2]
+            overlap = cur[2] - nxt[1]
+
+            # YouTubeは重なりが多いので、少し重なっていても続きなら結合
+            close_enough = gap <= 0.85 or overlap >= -0.10
+
+            if close_enough and should_merge_youtube_fragments(cur[3], nxt[3]):
+                cur = [cur[0], min(cur[1], nxt[1]), max(cur[2], nxt[2]), flatten_text(cur[3] + " " + nxt[3])]
+                i += 1
+            else:
+                break
+
+        merged.append(cur)
+
+    # 3) 時間が逆転・重なりすぎないように軽く整える
+    out = []
+    prev_end = None
+    for idx, start, end, body in merged:
+        if prev_end is not None and start < prev_end:
+            # 後続字幕を無理に押し出しすぎない。開始だけ前字幕終端に寄せる。
+            start = prev_end + MIN_GAP_SEC
+
+        if end <= start:
+            end = start + 0.10
+
+        out.append((idx, make_timecode(start, end), body))
+        prev_end = end
+
+    return out
+
+
 def convert_blocks_to_final_srt(
     blocks,
     remove_punct=True,
@@ -1287,7 +1491,12 @@ def convert_blocks_to_final_srt(
     dedupe=True,
     dedupe_gap_ms=1400,
     font_color="",
+    youtube_mode=False,
 ):
+    # YouTube字幕モードを選んだ時だけ、細切れ・重なりを先に整える
+    if youtube_mode:
+        blocks = preprocess_youtube_rolling_srt(blocks)
+
     items = make_clean_items(
         blocks,
         remove_punct=remove_punct,
@@ -1356,6 +1565,8 @@ def convert():
     try:
         offset_ms = int(request.form.get("offset_ms", "0"))
         txt_fps = float(request.form.get("txt_fps", "60"))
+        source_mode = request.form.get("source_mode", "normal")
+        youtube_mode = source_mode == "youtube"
 
         remove_punct = request.form.get("remove_punct") == "on"
         add_question_mark = request.form.get("add_question") == "on"
@@ -1363,7 +1574,7 @@ def convert():
 
         if filename_lower.endswith(".srt"):
             blocks = parse_srt_blocks(raw_text)
-            source_type = "srt"
+            source_type = "youtube_srt" if youtube_mode else "srt"
         else:
             blocks = parse_timed_txt_blocks(raw_text, fps=txt_fps)
             source_type = f"timed_txt_{txt_fps}fps"
@@ -1379,6 +1590,7 @@ def convert():
             dedupe=dedupe,
             dedupe_gap_ms=1400,
             font_color="",
+            youtube_mode=youtube_mode,
         )
 
         if not result_text.strip():
@@ -1393,7 +1605,7 @@ def convert():
         print(
             f"[{datetime.now()}] converted: "
             f"name={file.filename}, size={len(data)}, type={source_type}, "
-            f"question={add_question_mark}, punct={remove_punct}"
+            f"youtube_mode={youtube_mode}, question={add_question_mark}, punct={remove_punct}"
         )
 
         return send_file(
