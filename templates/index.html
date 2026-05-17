@@ -18,9 +18,7 @@
       --soft: #eff6ff;
     }
 
-    * {
-      box-sizing: border-box;
-    }
+    * { box-sizing: border-box; }
 
     body {
       margin: 0;
@@ -98,22 +96,22 @@
       font-size: 15px;
     }
 
-    .fps-box {
-      margin: 0 0 22px;
+    .select-box {
+      margin: 0 0 18px;
       padding: 16px;
       border: 1px solid var(--line);
       border-radius: 16px;
       background: #f9fafb;
     }
 
-    .fps-box label {
+    .select-box label {
       display: block;
       font-weight: 900;
       margin-bottom: 8px;
       font-size: 15px;
     }
 
-    .fps-box select {
+    .select-box select {
       width: 100%;
       padding: 13px;
       border-radius: 12px;
@@ -122,7 +120,7 @@
       font-size: 16px;
     }
 
-    .fps-box p {
+    .select-box p {
       margin: 8px 0 0;
       color: var(--muted);
       font-size: 13px;
@@ -141,9 +139,7 @@
       box-shadow: 0 10px 22px rgba(37, 99, 235, 0.28);
     }
 
-    button:hover {
-      background: var(--main-dark);
-    }
+    button:hover { background: var(--main-dark); }
 
     .notes {
       margin-top: 20px;
@@ -155,9 +151,7 @@
       font-size: 14px;
     }
 
-    .notes strong {
-      color: var(--text);
-    }
+    .notes strong { color: var(--text); }
 
     .footer {
       margin-top: 28px;
@@ -172,19 +166,11 @@
       text-decoration: none;
     }
 
-    .footer a:hover {
-      text-decoration: underline;
-    }
+    .footer a:hover { text-decoration: underline; }
 
     @media (max-width: 720px) {
-      .card {
-        padding: 20px;
-        border-radius: 20px;
-      }
-
-      .wrap {
-        padding-top: 24px;
-      }
+      .card { padding: 20px; border-radius: 20px; }
+      .wrap { padding-top: 24px; }
     }
   </style>
 </head>
@@ -192,7 +178,7 @@
 <body>
   <main class="wrap">
     <div class="hero">
-      <div class="badge">無料・SRT / タイムコード付きTXT対応</div>
+      <div class="badge">無料・SRT / YouTube SRT / タイムコード付きTXT対応</div>
       <h1>Whisper字幕クリーナー</h1>
       <p class="lead">
         SRTまたはタイムコード付きTXTを読み込み、Premiere ProやYouTubeで使いやすい
@@ -207,7 +193,18 @@
         <input type="file" name="srt_file" accept=".srt,.txt" required>
       </div>
 
-      <div class="fps-box">
+      <div class="select-box">
+        <label for="source_mode">字幕ファイルの種類</label>
+        <select id="source_mode" name="source_mode">
+          <option value="normal" selected>通常のSRT / タイムコード付きTXT</option>
+          <option value="youtube">YouTubeのSRT</option>
+        </select>
+        <p>
+          YouTubeのSRTを選ぶと、YouTube自動字幕で起きやすい細切れ・重なりを先に整理してから変換します。
+        </p>
+      </div>
+
+      <div class="select-box">
         <label for="txt_fps">タイムコード付きTXTのFPS</label>
         <select id="txt_fps" name="txt_fps">
           <option value="60" selected>60fps</option>
@@ -231,12 +228,12 @@
         <strong>対応ファイル：</strong><br>
         .srt / タイムコード付き .txt<br><br>
 
+        <strong>字幕ファイルの種類：</strong><br>
+        通常のSRT：Whisperなどで作った一般的なSRT向け<br>
+        YouTubeのSRT：YouTube自動字幕の細切れ・重なりが多いSRT向け<br><br>
+
         <strong>処理内容：</strong><br>
         文脈を見て字幕を結合・再分割し、見やすい1行または2行字幕に整形します。<br><br>
-
-        <strong>TXTのFPSについて：</strong><br>
-        60fpsの場合：00:00:01:15 → 00:00:01,250<br>
-        30fpsの場合：00:00:01:15 → 00:00:01,500<br><br>
 
         <strong>注意：</strong><br>
         音声に合わせたタイムコードの自動修正は行いません。
