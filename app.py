@@ -67,7 +67,6 @@ REPLACE = {
     "博業": "副業",
     "注入": "収入",
     "日頭": "日当",
-    "ライン": "LINE",
     "オンLINE": "オンライン",
     "オン line": "オンライン",
     "受 講生": "受講生",
@@ -126,24 +125,9 @@ REPLACE = {
     "走ちゃった": "走っちゃった",
     "見ばれ": "身バレ",
 
-    "サザエ": "さざえ",
     "うつ病": "鬱病",
 
     # 今回のサンプル寄り
-    "1026年卒": "2026年卒",
-    "1026年": "2026年",
-    "1026": "2026",
-    "石骨院": "接骨院",
-    "骨盤強制": "骨盤矯正",
-    "解散": "改ざん",
-    "金量": "給料",
-    "しらっと": "ちらっと",
-    "身を見真似": "見よう見まね",
-    "何もないのみたいな": "何もないの...？",
-    "という家です": "という形です",
-    "ニーズが足りない": "人数が足りない",
-    "営業を入れて": "営業に出て",
-    "こまで自分も": "そこまで自分も",
 
     # 接骨院・面接系の追加
     "積極院": "接骨院",
@@ -170,18 +154,6 @@ REPLACE = {
     "何もできないのに": "何もできないのに",
 
     # さらに訂正版寄せ
-    "そういう人体の骨の仕組み": "人体の骨の仕組み",
-    "人体の骨の仕組みみたいなのを": "人体の骨の仕組みを",
-    "学校でそういう": "学校で",
-    "患者さんの触ってストレッチしてたのを": "「患者さんのストレッチして」だの",
-    "患者さんの触ってストレッチしてた": "「患者さんのストレッチして」だの",
-    "患者さんのストレッチしてたのを": "「患者さんのストレッチして」だの",
-    "たのを 言われて": "だの言われて",
-    "何もないのみたいな": "何もないの...？",
-    "何もないの...？?": "何もないの...？",
-    "いやしてないんですけど": "いやしてないんですけど",
-    "給料下げるぞみたいな": "給料下げるぞみたいな",
-    "やばいかなって思って": "やばいかなって思って",
 }
 
 CONTEXT_REPLACEMENTS = [
@@ -211,23 +183,13 @@ CONTEXT_REPLACEMENTS = [
     (r"蠣", "牡蠣"),
 ]
 
-DROP_IF_ALONE = {
-    "えー", "あー", "うーん", "えっと", "えっとね", "うーんね",
-    "はいはい", "はい", "うん", "まあ", "まぁ",
-}
+DROP_IF_ALONE = set()
 
-FILLERS_AT_START = [
-    "えー", "あー", "えっと", "えっとね", "えーっと",
-    "うーん", "そのー", "あのー", "あの", "まぁ", "まあ",
-]
+FILLERS_AT_START = []
 
 # 単体で出てきたら基本的に字幕から落とす相づち・ノイズ
 # ※「なるほどですね」のような文は消さず、単体だけ消す
-DROP_STANDALONE_PHRASES = {
-    "えー", "あー", "うーん", "えっと", "えっとね", "えーっと",
-    "そのー", "あのー", "あの", "はい", "はいはい", "うん",
-    "なるほど", "まぁ", "まあ", "www", "w",
-}
+DROP_STANDALONE_PHRASES = set()
 
 KANJI_DIGIT = {
     "零": 0, "〇": 0,
@@ -308,41 +270,13 @@ def normalize_noise_key(text: str) -> str:
 
 
 def is_noise_only(text: str) -> bool:
-    return normalize_noise_key(text) in DROP_STANDALONE_PHRASES
+    # ノイズ削除は行わない
+    return False
 
 
 def remove_connection_noise(text: str) -> str:
-    """
-    えー / あー / はいはい / なるほど など、
-    文をつなぐためだけの相づちを削る。
-    文章の意味があるものは極力残す。
-    """
-    t = flatten_text(text)
-    if not t:
-        return ""
-
-    # 単体なら削除
-    if is_noise_only(t):
-        return ""
-
-    # 文頭のノイズだけ削る。例: 「えー 今日は」→「今日は」
-    changed = True
-    while changed:
-        changed = False
-        for w in sorted(DROP_STANDALONE_PHRASES, key=len, reverse=True):
-            # 「なるほどですね」は消したくないので、後ろが終端/空白/句読点の時だけ
-            pattern = rf"^({re.escape(w)})([、。,.\s…・]+)"
-            nt = re.sub(pattern, "", t).strip()
-            if nt != t:
-                t = nt
-                changed = True
-
-    # 途中に単独で挟まったノイズを削る。例: A えー B → AB
-    for w in sorted(DROP_STANDALONE_PHRASES, key=len, reverse=True):
-        t = re.sub(rf"(?<=\s){re.escape(w)}(?=\s)", "", t)
-
-    t = re.sub(r"\s+", " ", t).strip()
-    return compact_join_space(t)
+    # ノイズ削除は行わず、結合点の空白整理だけ行う
+    return compact_join_space(text)
 
 
 def remove_punctuation(s: str) -> str:
