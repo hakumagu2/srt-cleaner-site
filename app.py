@@ -217,8 +217,17 @@ DROP_IF_ALONE = {
 }
 
 FILLERS_AT_START = [
-    "えー", "あー", "えっと", "えっとね", "うーん", "そのー", "あのー",
+    "えー", "あー", "えっと", "えっとね", "えーっと",
+    "うーん", "そのー", "あのー", "あの", "まぁ", "まあ",
 ]
+
+# 単体で出てきたら基本的に字幕から落とす相づち・ノイズ
+# ※「なるほどですね」のような文は消さず、単体だけ消す
+DROP_STANDALONE_PHRASES = {
+    "えー", "あー", "うーん", "えっと", "えっとね", "えーっと",
+    "そのー", "あのー", "あの", "はい", "はいはい", "うん",
+    "なるほど", "まぁ", "まあ", "www", "w",
+}
 
 KANJI_DIGIT = {
     "零": 0, "〇": 0,
@@ -256,6 +265,84 @@ def flatten_text(s: str) -> str:
     s = s.replace("\n", " ")
     s = re.sub(r"\s+", " ", s)
     return s.strip()
+
+
+def compact_join_space(s: str) -> str:
+    """
+    結合点に入った不要な空白を削除する。
+    日本語同士の間の半角スペースは消す。
+    英数字同士のスペースだけは残す。
+    """
+    s = normalize_spaces(s)
+    # 日本語/記号と日本語の間にある空白を削る
+    s = re.sub(r"(?<=[ぁ-んァ-ン一-龥ー、。！？?！])\s+(?=[ぁ-んァ-ン一-龥ー])", "", s)
+    # 日本語と数字・英字の間も基本詰める（例: 22 卒です -> 22卒です）
+    s = re.sub(r"(?<=[0-9])\s+(?=[ぁ-んァ-ン一-龥ー])", "", s)
+    s = re.sub(r"(?<=[ぁ-んァ-ン一-龥ー])\s+(?=[0-9])", "", s)
+    # 日本語と英字も詰める（YouTube動画 のように見せたい）
+    s = re.sub(r"(?<=[A-Za-z])\s+(?=[ぁ-んァ-ン一-龥ー])", "", s)
+    s = re.sub(r"(?<=[ぁ-んァ-ン一-龥ー])\s+(?=[A-Za-z])", "", s)
+    s = re.sub(r"\s+([、。！？?！])", r"\1", s)
+    return s.strip()
+
+
+def join_caption_text(a: str, b: str) -> str:
+    """字幕同士の結合。結合点の空白を残さない。"""
+    a = flatten_text(a)
+    b = flatten_text(b)
+    if not a:
+        return b
+    if not b:
+        return a
+    return compact_join_space(a + " " + b)
+
+
+def normalize_noise_key(text: str) -> str:
+    t = flatten_text(text)
+    t = t.replace("、", "").replace("。", "")
+    t = t.replace("?", "").replace("？", "")
+    t = t.replace("!", "").replace("！", "")
+    t = t.replace("…", "").replace("・", "")
+    t = t.replace("「", "").replace("」", "").replace('"', "").replace("'", "")
+    return t.strip()
+
+
+def is_noise_only(text: str) -> bool:
+    return normalize_noise_key(text) in DROP_STANDALONE_PHRASES
+
+
+def remove_connection_noise(text: str) -> str:
+    """
+    えー / あー / はいはい / なるほど など、
+    文をつなぐためだけの相づちを削る。
+    文章の意味があるものは極力残す。
+    """
+    t = flatten_text(text)
+    if not t:
+        return ""
+
+    # 単体なら削除
+    if is_noise_only(t):
+        return ""
+
+    # 文頭のノイズだけ削る。例: 「えー 今日は」→「今日は」
+    changed = True
+    while changed:
+        changed = False
+        for w in sorted(DROP_STANDALONE_PHRASES, key=len, reverse=True):
+            # 「なるほどですね」は消したくないので、後ろが終端/空白/句読点の時だけ
+            pattern = rf"^({re.escape(w)})([、。,.\s…・]+)"
+            nt = re.sub(pattern, "", t).strip()
+            if nt != t:
+                t = nt
+                changed = True
+
+    # 途中に単独で挟まったノイズを削る。例: A えー B → AB
+    for w in sorted(DROP_STANDALONE_PHRASES, key=len, reverse=True):
+        t = re.sub(rf"(?<=\s){re.escape(w)}(?=\s)", "", t)
+
+    t = re.sub(r"\s+", " ", t).strip()
+    return compact_join_space(t)
 
 
 def remove_punctuation(s: str) -> str:
@@ -318,7 +405,7 @@ def remove_fillers(text: str) -> str:
 
         out.append(line)
 
-    return "\n".join(out).strip()
+    return remove_connection_noise("\n".join(out).strip())
 
 
 def apply_replace(s: str) -> str:
@@ -502,7 +589,7 @@ def should_drop_if_alone(text: str) -> bool:
 
     if not t:
         return True
-    if t in DROP_IF_ALONE:
+    if t in DROP_IF_ALONE or is_noise_only(t):
         return True
     if re.fullmatch(r"[?？!！…・ー]+", t):
         return True
@@ -550,8 +637,10 @@ def clean_body_text(body: str, remove_punct=True, add_question_mark=True) -> str
     if remove_punct:
         text = remove_punctuation(text)
 
+    text = remove_connection_noise(text)
     text = flatten_text(text)
     text = ensure_question_mark(text, add_question_mark=add_question_mark)
+    text = compact_join_space(text)
 
     return text
 
@@ -572,7 +661,10 @@ def should_not_merge(a: str, b: str) -> bool:
 
     if not a or not b:
         return True
-    if a.endswith(("?", "？", "!", "！")):
+    if is_noise_only(a) or is_noise_only(b):
+        return True
+    # 疑問が投げかけられた次は基本的に回答なので、同じテロップに結合しない
+    if a.endswith(("?", "？", "!", "！")) or is_question_like(a):
         return True
     if b.startswith(BOUNDARY_STARTS):
         return True
@@ -592,7 +684,7 @@ def is_strong_continuation(a: str, b: str) -> bool:
     if should_not_merge(a, b):
         return False
 
-    combined = a + b
+    combined = join_caption_text(a, b)
     if len(combined) > MAX_MERGE_CHARS:
         return False
 
@@ -686,8 +778,11 @@ def merge_context_items_once(items):
             gap = nxt[1] - cur[2]
 
             if gap <= MERGE_GAP_SEC and is_strong_continuation(cur[3], nxt[3]):
-                combined = flatten_text(cur[3] + " " + nxt[3])
-                out.append([cur[0], cur[1], nxt[2], combined])
+                combined = join_caption_text(cur[3], nxt[3])
+                if not should_drop_if_alone(combined):
+                    out.append([cur[0], cur[1], nxt[2], combined])
+                else:
+                    out.append(cur)
                 i += 2
                 continue
 
@@ -835,7 +930,7 @@ def find_line_break(text: str):
 
 
 def format_two_lines(text: str, font_color: str = ""):
-    text = flatten_text(text)
+    text = compact_join_space(flatten_text(text))
     text = re.sub(r"([をがはにでともへ])\s+", r"\1", text)
     text = text.replace(" ?","?").replace(" ？","？")
 
@@ -1103,7 +1198,7 @@ def split_long_caption(item):
                 if not buf:
                     buf = c
                 elif len(buf + c) <= TWO_LINE_LIMIT:
-                    buf = flatten_text(buf + " " + c)
+                    buf = join_caption_text(buf, c)
                 else:
                     merged.append(buf)
                     buf = c
@@ -1363,7 +1458,14 @@ def should_merge_youtube_fragments(a: str, b: str, combined_limit=70) -> bool:
     if not a or not b:
         return False
 
-    combined = flatten_text(a + " " + b)
+    if is_noise_only(a) or is_noise_only(b):
+        return False
+
+    # 疑問文の後ろは回答になりやすいので結合しない
+    if a.endswith(("?", "？")) or is_question_like(a):
+        return False
+
+    combined = join_caption_text(a, b)
     if len(combined) > combined_limit:
         return False
 
@@ -1400,8 +1502,8 @@ def preprocess_youtube_rolling_srt(blocks):
         except Exception:
             continue
 
-        body = flatten_text(body)
-        if not body:
+        body = remove_connection_noise(flatten_text(body))
+        if not body or is_noise_only(body):
             continue
 
         parsed.append([idx, start, end, body])
@@ -1459,7 +1561,7 @@ def preprocess_youtube_rolling_srt(blocks):
             close_enough = gap <= 0.85 or overlap >= -0.10
 
             if close_enough and should_merge_youtube_fragments(cur[3], nxt[3]):
-                cur = [cur[0], min(cur[1], nxt[1]), max(cur[2], nxt[2]), flatten_text(cur[3] + " " + nxt[3])]
+                cur = [cur[0], min(cur[1], nxt[1]), max(cur[2], nxt[2]), join_caption_text(cur[3], nxt[3])]
                 i += 1
             else:
                 break
@@ -1515,6 +1617,7 @@ def convert_blocks_to_final_srt(
     # 3. 1字幕内を自然な1行/2行に整形
     fixed_blocks = []
     for idx, start, end, text in split_items:
+        text = remove_connection_noise(compact_join_space(text))
         formatted = format_two_lines(text, font_color=font_color)
         if formatted and not should_drop_if_alone(strip_tags(formatted)):
             fixed_blocks.append((idx, make_timecode(start, end), formatted))
