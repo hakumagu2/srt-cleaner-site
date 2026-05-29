@@ -1,15 +1,11 @@
 # -*- coding: utf-8 -*-
-import argparse
-import re
-import subprocess
-import sys
 import io
-from pathlib import Path
+import re
 from datetime import datetime
 from flask import Flask, render_template, request, send_file
 
 # =========================================================
-# MP3フォルダ一括 → Whisper文字起こし → 文脈重視SRT整形 改良版
+# Web版：SRTアップロード → 文脈重視SRT整形
 #
 # 方針：
 # ・単語や文節を細かく切りすぎない
@@ -17,7 +13,7 @@ from flask import Flask, render_template, request, send_file
 # ・2行にするときは「前半の説明 / 後半の結論・質問」にする
 # ・必要な時だけ、隣の短い字幕を結合する
 # ・元のタイムコードを押し出さない
-# ・final.srt が整形後
+# ・入力SRTをSRTのまま整形し、final.srt を出力
 # =========================================================
 
 LINE_CHARS_DEFAULT = 24          # 1行の目安。これより長くても自然なら1行可
@@ -34,10 +30,6 @@ MAX_MERGE_CHARS = 62             # 結合後の最大文字数
 # 色付き字幕にしたい場合だけ使う
 # 例: --font-color C4DDFFFF
 FONT_COLOR_DEFAULT = ""
-
-app = Flask(__name__)
-MAX_FILE_SIZE = 2 * 1024 * 1024  # 2MB
-
 
 # =========================================================
 # 置換辞書
@@ -67,6 +59,7 @@ REPLACE = {
     "博業": "副業",
     "注入": "収入",
     "日頭": "日当",
+    "ライン": "LINE",
     "オンLINE": "オンライン",
     "オン line": "オンライン",
     "受 講生": "受講生",
@@ -125,9 +118,24 @@ REPLACE = {
     "走ちゃった": "走っちゃった",
     "見ばれ": "身バレ",
 
+    "サザエ": "さざえ",
     "うつ病": "鬱病",
 
     # 今回のサンプル寄り
+    "1026年卒": "2026年卒",
+    "1026年": "2026年",
+    "1026": "2026",
+    "石骨院": "接骨院",
+    "骨盤強制": "骨盤矯正",
+    "解散": "改ざん",
+    "金量": "給料",
+    "しらっと": "ちらっと",
+    "身を見真似": "見よう見まね",
+    "何もないのみたいな": "何もないの...？",
+    "という家です": "という形です",
+    "ニーズが足りない": "人数が足りない",
+    "営業を入れて": "営業に出て",
+    "こまで自分も": "そこまで自分も",
 
     # 接骨院・面接系の追加
     "積極院": "接骨院",
@@ -154,6 +162,18 @@ REPLACE = {
     "何もできないのに": "何もできないのに",
 
     # さらに訂正版寄せ
+    "そういう人体の骨の仕組み": "人体の骨の仕組み",
+    "人体の骨の仕組みみたいなのを": "人体の骨の仕組みを",
+    "学校でそういう": "学校で",
+    "患者さんの触ってストレッチしてたのを": "「患者さんのストレッチして」だの",
+    "患者さんの触ってストレッチしてた": "「患者さんのストレッチして」だの",
+    "患者さんのストレッチしてたのを": "「患者さんのストレッチして」だの",
+    "たのを 言われて": "だの言われて",
+    "何もないのみたいな": "何もないの...？",
+    "何もないの...？?": "何もないの...？",
+    "いやしてないんですけど": "いやしてないんですけど",
+    "給料下げるぞみたいな": "給料下げるぞみたいな",
+    "やばいかなって思って": "やばいかなって思って",
 }
 
 CONTEXT_REPLACEMENTS = [
@@ -183,13 +203,14 @@ CONTEXT_REPLACEMENTS = [
     (r"蠣", "牡蠣"),
 ]
 
-DROP_IF_ALONE = set()
+DROP_IF_ALONE = {
+    "えー", "あー", "うーん", "えっと", "えっとね", "うーんね",
+    "はいはい", "はい", "うん", "まあ", "まぁ",
+}
 
-FILLERS_AT_START = []
-
-# 単体で出てきたら基本的に字幕から落とす相づち・ノイズ
-# ※「なるほどですね」のような文は消さず、単体だけ消す
-DROP_STANDALONE_PHRASES = set()
+FILLERS_AT_START = [
+    "えー", "あー", "えっと", "えっとね", "うーん", "そのー", "あのー",
+]
 
 KANJI_DIGIT = {
     "零": 0, "〇": 0,
@@ -227,56 +248,6 @@ def flatten_text(s: str) -> str:
     s = s.replace("\n", " ")
     s = re.sub(r"\s+", " ", s)
     return s.strip()
-
-
-def compact_join_space(s: str) -> str:
-    """
-    結合点に入った不要な空白を削除する。
-    日本語同士の間の半角スペースは消す。
-    英数字同士のスペースだけは残す。
-    """
-    s = normalize_spaces(s)
-    # 日本語/記号と日本語の間にある空白を削る
-    s = re.sub(r"(?<=[ぁ-んァ-ン一-龥ー、。！？?！])\s+(?=[ぁ-んァ-ン一-龥ー])", "", s)
-    # 日本語と数字・英字の間も基本詰める（例: 22 卒です -> 22卒です）
-    s = re.sub(r"(?<=[0-9])\s+(?=[ぁ-んァ-ン一-龥ー])", "", s)
-    s = re.sub(r"(?<=[ぁ-んァ-ン一-龥ー])\s+(?=[0-9])", "", s)
-    # 日本語と英字も詰める（YouTube動画 のように見せたい）
-    s = re.sub(r"(?<=[A-Za-z])\s+(?=[ぁ-んァ-ン一-龥ー])", "", s)
-    s = re.sub(r"(?<=[ぁ-んァ-ン一-龥ー])\s+(?=[A-Za-z])", "", s)
-    s = re.sub(r"\s+([、。！？?！])", r"\1", s)
-    return s.strip()
-
-
-def join_caption_text(a: str, b: str) -> str:
-    """字幕同士の結合。結合点の空白を残さない。"""
-    a = flatten_text(a)
-    b = flatten_text(b)
-    if not a:
-        return b
-    if not b:
-        return a
-    return compact_join_space(a + " " + b)
-
-
-def normalize_noise_key(text: str) -> str:
-    t = flatten_text(text)
-    t = t.replace("、", "").replace("。", "")
-    t = t.replace("?", "").replace("？", "")
-    t = t.replace("!", "").replace("！", "")
-    t = t.replace("…", "").replace("・", "")
-    t = t.replace("「", "").replace("」", "").replace('"', "").replace("'", "")
-    return t.strip()
-
-
-def is_noise_only(text: str) -> bool:
-    # ノイズ削除は行わない
-    return False
-
-
-def remove_connection_noise(text: str) -> str:
-    # ノイズ削除は行わず、結合点の空白整理だけ行う
-    return compact_join_space(text)
 
 
 def remove_punctuation(s: str) -> str:
@@ -339,7 +310,7 @@ def remove_fillers(text: str) -> str:
 
         out.append(line)
 
-    return remove_connection_noise("\n".join(out).strip())
+    return "\n".join(out).strip()
 
 
 def apply_replace(s: str) -> str:
@@ -523,7 +494,7 @@ def should_drop_if_alone(text: str) -> bool:
 
     if not t:
         return True
-    if t in DROP_IF_ALONE or is_noise_only(t):
+    if t in DROP_IF_ALONE:
         return True
     if re.fullmatch(r"[?？!！…・ー]+", t):
         return True
@@ -571,10 +542,8 @@ def clean_body_text(body: str, remove_punct=True, add_question_mark=True) -> str
     if remove_punct:
         text = remove_punctuation(text)
 
-    text = remove_connection_noise(text)
     text = flatten_text(text)
     text = ensure_question_mark(text, add_question_mark=add_question_mark)
-    text = compact_join_space(text)
 
     return text
 
@@ -595,10 +564,7 @@ def should_not_merge(a: str, b: str) -> bool:
 
     if not a or not b:
         return True
-    if is_noise_only(a) or is_noise_only(b):
-        return True
-    # 疑問が投げかけられた次は基本的に回答なので、同じテロップに結合しない
-    if a.endswith(("?", "？", "!", "！")) or is_question_like(a):
+    if a.endswith(("?", "？", "!", "！")):
         return True
     if b.startswith(BOUNDARY_STARTS):
         return True
@@ -618,7 +584,7 @@ def is_strong_continuation(a: str, b: str) -> bool:
     if should_not_merge(a, b):
         return False
 
-    combined = join_caption_text(a, b)
+    combined = a + b
     if len(combined) > MAX_MERGE_CHARS:
         return False
 
@@ -712,11 +678,8 @@ def merge_context_items_once(items):
             gap = nxt[1] - cur[2]
 
             if gap <= MERGE_GAP_SEC and is_strong_continuation(cur[3], nxt[3]):
-                combined = join_caption_text(cur[3], nxt[3])
-                if not should_drop_if_alone(combined):
-                    out.append([cur[0], cur[1], nxt[2], combined])
-                else:
-                    out.append(cur)
+                combined = flatten_text(cur[3] + " " + nxt[3])
+                out.append([cur[0], cur[1], nxt[2], combined])
                 i += 2
                 continue
 
@@ -864,7 +827,7 @@ def find_line_break(text: str):
 
 
 def format_two_lines(text: str, font_color: str = ""):
-    text = compact_join_space(flatten_text(text))
+    text = flatten_text(text)
     text = re.sub(r"([をがはにでともへ])\s+", r"\1", text)
     text = text.replace(" ?","?").replace(" ？","？")
 
@@ -1132,7 +1095,7 @@ def split_long_caption(item):
                 if not buf:
                     buf = c
                 elif len(buf + c) <= TWO_LINE_LIMIT:
-                    buf = join_caption_text(buf, c)
+                    buf = flatten_text(buf + " " + c)
                 else:
                     merged.append(buf)
                     buf = c
@@ -1250,288 +1213,28 @@ def apply_offset_only(blocks, offset_ms=0):
 
 
 
-
 # =========================================================
-# タイムコード付きTXT読み取り
-# 例:
-# 00:00:01:15 - 00:00:02:19
-# こんばんは
+# Flask Web版：SRTをSRTのまま整形
 # =========================================================
 
-TXT_TC_PATTERN = re.compile(
-    r"^\s*(\d{2}:\d{2}:\d{2}:\d{2})\s*-\s*(\d{2}:\d{2}:\d{2}:\d{2})\s*$"
-)
+app = Flask(__name__)
+MAX_FILE_SIZE = 2 * 1024 * 1024  # 2MB
 
-def frame_tc_to_srt_tc(tc: str, fps: float) -> str:
-    h, m, s, f = tc.split(":")
-    total_sec = int(h) * 3600 + int(m) * 60 + int(s) + (int(f) / fps)
-    return sec_to_tc(total_sec)
 
-def parse_timed_txt_blocks(txt_text: str, fps: float = 60.0):
-    txt_text = txt_text.replace("\r\n", "\n").replace("\r", "\n").strip()
-    lines = txt_text.split("\n")
-
-    out = []
-    current_start = None
-    current_end = None
-    current_body = []
-
-    def flush():
-        nonlocal current_start, current_end, current_body
-        if current_start and current_end:
-            body = "\n".join(current_body).strip()
-            if body:
-                start_tc = frame_tc_to_srt_tc(current_start, fps)
-                end_tc = frame_tc_to_srt_tc(current_end, fps)
-                out.append(("", f"{start_tc} --> {end_tc}", body))
-        current_start = None
-        current_end = None
-        current_body = []
-
-    for line in lines:
-        m = TXT_TC_PATTERN.match(line)
-        if m:
-            flush()
-            current_start = m.group(1)
-            current_end = m.group(2)
-            current_body = []
-        else:
-            if current_start and current_end and line.strip():
-                current_body.append(line.strip())
-
-    flush()
-    return out
-
-
-# =========================================================
-# サイト用：SRT/TXT → final.srt
-# 音声処理はしない。アップロード済みのSRT/TXTだけ整形。
-# =========================================================
-
-
-# =========================================================
-# YouTube自動字幕SRTの前処理
-# =========================================================
-
-def is_probably_youtube_rolling(blocks) -> bool:
-    """
-    YouTube自動字幕のSRTは、
-    ・前後の字幕時間が重なりやすい
-    ・「22」→「卒です」「26」→「歳です」のように細かく割れやすい
-    ので、その傾向が強い時だけ前処理する。
-    """
-    if len(blocks) < 8:
-        return False
-
-    overlap_count = 0
-    tiny_count = 0
-    checked = 0
-    prev_end = None
-
-    for _idx, timecode, body in blocks[:120]:
-        try:
-            start, end = split_timecode(timecode)
-        except Exception:
-            continue
-
-        checked += 1
-        text = flatten_text(body)
-
-        if prev_end is not None and start < prev_end:
-            overlap_count += 1
-
-        if len(normalize_for_dedupe(text)) <= 4:
-            tiny_count += 1
-
-        prev_end = end
-
-    if checked == 0:
-        return False
-
-    # YouTubeっぽい条件：重なりが多い、または短すぎる断片が多い
-    return (overlap_count / checked >= 0.18) or (tiny_count / checked >= 0.18)
-
-
-def looks_like_fragment(text: str) -> bool:
-    """
-    単体では字幕として弱い断片。
-    例：22 / 26 / 23年の4 / IT / 系 / 卒です / 歳です
-    """
-    t = flatten_text(text)
-    n = normalize_for_dedupe(t)
-
-    if not n:
-        return True
-
-    if len(n) <= 2:
-        return True
-
-    if re.fullmatch(r"\d+", n):
-        return True
-
-    if re.fullmatch(r"\d+年の?\d*", n):
-        return True
-
-    if n in {"卒です", "歳です", "月", "系", "者目", "画面", "はい", "うん"}:
-        return True
-
-    if len(n) <= 5 and re.search(r"(です|ます|ました|でした|卒|歳|年|月|系)$", n):
-        return True
-
-    return False
-
-
-def should_merge_youtube_fragments(a: str, b: str, combined_limit=70) -> bool:
-    """
-    YouTube自動字幕の細切れを戻す。
-    ただし何でも結合すると長くなりすぎるので、断片っぽいもの中心。
-    """
-    a = flatten_text(a)
-    b = flatten_text(b)
-
-    if not a or not b:
-        return False
-
-    if is_noise_only(a) or is_noise_only(b):
-        return False
-
-    # 疑問文の後ろは回答になりやすいので結合しない
-    if a.endswith(("?", "？")) or is_question_like(a):
-        return False
-
-    combined = join_caption_text(a, b)
-    if len(combined) > combined_limit:
-        return False
-
-    # 片方が明らかな断片なら結合
-    if looks_like_fragment(a) or looks_like_fragment(b):
-        return True
-
-    # 前が途中で終わっている
-    if re.search(r"(を|が|は|に|で|と|も|の|とか|けど|ので|から|して|していて|してて|なりまして|思い切って|まず|はいまず|え)$", a):
-        return True
-
-    # 後ろが続きっぽい
-    if re.match(r"^(月|歳|卒|系|者目|の|を|が|は|に|で|と|も|ちょっと|月から|月退職|歳です|卒です)", b):
-        return True
-
-    return False
-
-
-def preprocess_youtube_rolling_srt(blocks):
-    """
-    YouTube自動字幕のローリング表示・細切れを、通常のSRTに近づける前処理。
-    ここではまだ本文整形しない。ブロックの整理だけ行う。
-    """
-    if not blocks:
-        return blocks
-
-    if not is_probably_youtube_rolling(blocks):
-        return blocks
-
-    parsed = []
-    for idx, timecode, body in blocks:
-        try:
-            start, end = split_timecode(timecode)
-        except Exception:
-            continue
-
-        body = remove_connection_noise(flatten_text(body))
-        if not body or is_noise_only(body):
-            continue
-
-        parsed.append([idx, start, end, body])
-
-    if not parsed:
-        return blocks
-
-    # 1) ほぼ同じ時間帯の短い包含字幕を削る
-    # 例：短い「はい」や「画面」が長い字幕に重なっている場合
-    kept = []
-    for i, cur in enumerate(parsed):
-        _idx, s, e, text = cur
-        cur_norm = normalize_for_dedupe(text)
-        drop = False
-
-        for j in range(max(0, i - 3), min(len(parsed), i + 4)):
-            if i == j:
-                continue
-
-            _jidx, js, je, jtext = parsed[j]
-            j_norm = normalize_for_dedupe(jtext)
-
-            if not cur_norm or not j_norm:
-                continue
-
-            overlap = max(0.0, min(e, je) - max(s, js))
-            dur = max(0.01, e - s)
-
-            # 自分が相手の文字列に含まれ、時間も大きく重なるなら削る
-            if len(cur_norm) <= 12 and cur_norm != j_norm and cur_norm in j_norm and overlap / dur >= 0.50:
-                drop = True
-                break
-
-            # かなり短い断片が長い字幕と強く重なるなら削る
-            if looks_like_fragment(text) and len(j_norm) >= 8 and overlap / dur >= 0.75:
-                drop = True
-                break
-
-        if not drop:
-            kept.append(cur)
-
-    # 2) 近い時間で続いている細切れを結合
-    merged = []
-    i = 0
-    while i < len(kept):
-        cur = kept[i]
-        i += 1
-
-        while i < len(kept):
-            nxt = kept[i]
-            gap = nxt[1] - cur[2]
-            overlap = cur[2] - nxt[1]
-
-            # YouTubeは重なりが多いので、少し重なっていても続きなら結合
-            close_enough = gap <= 0.85 or overlap >= -0.10
-
-            if close_enough and should_merge_youtube_fragments(cur[3], nxt[3]):
-                cur = [cur[0], min(cur[1], nxt[1]), max(cur[2], nxt[2]), join_caption_text(cur[3], nxt[3])]
-                i += 1
-            else:
-                break
-
-        merged.append(cur)
-
-    # 3) 時間が逆転・重なりすぎないように軽く整える
-    out = []
-    prev_end = None
-    for idx, start, end, body in merged:
-        if prev_end is not None and start < prev_end:
-            # 後続字幕を無理に押し出しすぎない。開始だけ前字幕終端に寄せる。
-            start = prev_end + MIN_GAP_SEC
-
-        if end <= start:
-            end = start + 0.10
-
-        out.append((idx, make_timecode(start, end), body))
-        prev_end = end
-
-    return out
-
-
-def convert_blocks_to_final_srt(
-    blocks,
+def convert_srt_text_to_final(
+    srt_text: str,
     remove_punct=True,
     add_question_mark=True,
     offset_ms=0,
     dedupe=True,
     dedupe_gap_ms=1400,
     font_color="",
-    youtube_mode=False,
 ):
-    # YouTube字幕モードを選んだ時だけ、細切れ・重なりを先に整える
-    if youtube_mode:
-        blocks = preprocess_youtube_rolling_srt(blocks)
+    """
+    SRT文字列を受け取り、元コードと同じ条件で整形したSRT文字列を返す。
+    WhisperやMP3処理は行わない。
+    """
+    blocks = parse_srt_blocks(srt_text)
 
     items = make_clean_items(
         blocks,
@@ -1539,27 +1242,22 @@ def convert_blocks_to_final_srt(
         add_question_mark=add_question_mark,
     )
 
-    # 既存Pythonコードと同じ流れ
-    # 1. 文脈的に続く短い字幕だけ結合
+    # 文脈的に続くところだけ結合
     items = merge_context_items(items)
 
-    # 2. 長すぎる字幕だけ自然な位置で字幕自体を分割
+    # 長すぎる字幕だけ分割
     split_items = []
     for item in items:
         split_items.extend(split_long_caption(item))
 
-    # 3. 1字幕内を自然な1行/2行に整形
     fixed_blocks = []
-    for idx, start, end, text in split_items:
-        text = remove_connection_noise(compact_join_space(text))
-        formatted = format_two_lines(text, font_color=font_color)
+    for idx, start, end, txt in split_items:
+        formatted = format_two_lines(txt, font_color=font_color)
         if formatted and not should_drop_if_alone(strip_tags(formatted)):
             fixed_blocks.append((idx, make_timecode(start, end), formatted))
 
-    # 4. 全体オフセットだけ適用。タイムコードを無理に押し出さない
     fixed_blocks = apply_offset_only(fixed_blocks, offset_ms=offset_ms)
 
-    # 5. 連続重複だけ削除
     if dedupe:
         fixed_blocks = remove_consecutive_duplicates(
             fixed_blocks,
@@ -1577,61 +1275,41 @@ def index():
 @app.route("/convert", methods=["POST"])
 def convert():
     if "srt_file" not in request.files:
-        return "ファイルがありません", 400
+        return "SRTファイルがありません", 400
 
     file = request.files["srt_file"]
 
     if file.filename == "":
         return "ファイルが選択されていません", 400
 
-    filename_lower = file.filename.lower()
-
-    if not (filename_lower.endswith(".srt") or filename_lower.endswith(".txt")):
-        return "SRT または タイムコード付きTXT のみ対応しています", 400
+    if not file.filename.lower().endswith(".srt"):
+        return "SRTファイルのみ対応しています", 400
 
     data = file.read()
 
     if len(data) > MAX_FILE_SIZE:
-        return "ファイルサイズが大きすぎます。2MB以内のファイルを使ってください。", 400
+        return "ファイルサイズが大きすぎます。2MB以内のSRTを使ってください。", 400
 
     try:
-        raw_text = data.decode("utf-8-sig")
+        srt_text = data.decode("utf-8-sig")
     except UnicodeDecodeError:
-        raw_text = data.decode("cp932", errors="replace")
+        srt_text = data.decode("cp932", errors="replace")
 
     try:
-        offset_ms = int(request.form.get("offset_ms", "0"))
-        txt_fps = float(request.form.get("txt_fps", "60"))
-        source_mode = request.form.get("source_mode", "normal")
-        youtube_mode = source_mode == "youtube"
-
-        remove_punct = request.form.get("remove_punct") == "on"
-        add_question_mark = request.form.get("add_question") == "on"
-        dedupe = request.form.get("dedupe") == "on"
-
-        if filename_lower.endswith(".srt"):
-            blocks = parse_srt_blocks(raw_text)
-            source_type = "youtube_srt" if youtube_mode else "srt"
-        else:
-            blocks = parse_timed_txt_blocks(raw_text, fps=txt_fps)
-            source_type = f"timed_txt_{txt_fps}fps"
-
-        if not blocks:
-            return "変換できる字幕がありませんでした。SRTまたはタイムコード付きTXTの形式を確認してください。", 400
-
-        result_text = convert_blocks_to_final_srt(
-            blocks=blocks,
-            remove_punct=remove_punct,
-            add_question_mark=add_question_mark,
-            offset_ms=offset_ms,
-            dedupe=dedupe,
+        # 画面側には出さない固定条件。
+        # 添付されたローカル版コードの標準条件をそのまま使う。
+        result_text = convert_srt_text_to_final(
+            srt_text=srt_text,
+            remove_punct=True,
+            add_question_mark=True,
+            offset_ms=0,
+            dedupe=True,
             dedupe_gap_ms=1400,
             font_color="",
-            youtube_mode=youtube_mode,
         )
 
         if not result_text.strip():
-            return "変換できる字幕がありませんでした。ファイルの形式を確認してください。", 400
+            return "変換できる字幕がありませんでした。SRTの形式を確認してください。", 400
 
         output = io.BytesIO(result_text.encode("utf-8"))
         output.seek(0)
@@ -1641,8 +1319,7 @@ def convert():
 
         print(
             f"[{datetime.now()}] converted: "
-            f"name={file.filename}, size={len(data)}, type={source_type}, "
-            f"youtube_mode={youtube_mode}, question={add_question_mark}, punct={remove_punct}"
+            f"name={file.filename}, size={len(data)}, mode=srt_context_formatter"
         )
 
         return send_file(
@@ -1654,7 +1331,7 @@ def convert():
 
     except Exception as e:
         print("ERROR:", type(e).__name__, e)
-        return "変換中にエラーが発生しました。ファイルの形式を確認してください。", 500
+        return "変換中にエラーが発生しました。SRTの形式を確認してください。", 500
 
 
 if __name__ == "__main__":
